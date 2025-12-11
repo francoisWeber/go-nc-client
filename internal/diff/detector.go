@@ -52,7 +52,7 @@ func NewDetector(client *webdav.Client, stateFile string) *Detector {
 	}
 }
 
-func (d *Detector) DetectChanges(directories []string) ([]Changes, error) {
+func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Changes, error) {
 	// Load previous state
 	prevState, err := d.loadState()
 	if err != nil {
@@ -102,6 +102,10 @@ func (d *Detector) DetectChanges(directories []string) ([]Changes, error) {
 			dirKey := dir
 			for key, fileState := range prevState.Files {
 				if strings.HasPrefix(key, dirKey+":") {
+					// Filter hidden files if not including them
+					if !includeHidden && isHidden(fileState.Path) {
+						continue
+					}
 					// Copy file from previous state
 					currentState.Files[key] = fileState
 					// Convert FileState back to FileInfo for consistency
@@ -116,7 +120,7 @@ func (d *Detector) DetectChanges(directories []string) ([]Changes, error) {
 			}
 		} else {
 			// Directory has changed or first scan, do full recursive scan
-			files, err = d.client.ListFiles(dir)
+			files, err = d.client.ListFiles(dir, includeHidden)
 			if err != nil {
 				return nil, fmt.Errorf("failed to list files in %s: %w", dir, err)
 			}
@@ -275,6 +279,18 @@ func (d *Detector) detectMoves(changes []Change, directory string, prevState, cu
 	}
 
 	return changes
+}
+
+// isHidden checks if a file or directory path contains hidden components
+// Hidden files/directories are those starting with "."
+func isHidden(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for _, part := range parts {
+		if part != "" && strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func removeChange(changes []Change, changeType, path string) []Change {

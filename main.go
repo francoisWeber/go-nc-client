@@ -86,13 +86,26 @@ func diffHandler(detector *diff.Detector) http.HandlerFunc {
 			return
 		}
 
+		// Parse request body for include-hidden flag
+		var requestBody struct {
+			IncludeHidden bool `json:"include-hidden"`
+		}
+		
+		// Try to decode JSON body, but don't fail if body is empty
+		if r.ContentLength > 0 {
+			if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+				// If JSON parsing fails, default to false
+				requestBody.IncludeHidden = false
+			}
+		}
+
 		cfg, err := config.Load("config.json")
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to load config: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		changes, err := detector.DetectChanges(cfg.Directories)
+		changes, err := detector.DetectChanges(cfg.Directories, requestBody.IncludeHidden)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to detect changes: %v", err), http.StatusInternalServerError)
 			return
@@ -116,7 +129,13 @@ func lsHandler(client *webdav.Client) http.HandlerFunc {
 			path = "/"
 		}
 
-		files, err := client.ListDir(path)
+		// Get include-hidden flag from query parameter, default to false
+		includeHidden := false
+		if r.URL.Query().Get("include-hidden") == "true" {
+			includeHidden = true
+		}
+
+		files, err := client.ListDir(path, includeHidden)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to list directory: %v", err), http.StatusInternalServerError)
 			return
@@ -124,8 +143,9 @@ func lsHandler(client *webdav.Client) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"path":  path,
-			"files": files,
+			"path":          path,
+			"files":         files,
+			"include_hidden": includeHidden,
 		})
 	}
 }

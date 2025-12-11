@@ -104,10 +104,15 @@ List files and directories in a specific path.
 
 **Query Parameters:**
 - `path` (optional): The directory path to list. Defaults to `/` (root).
+- `include-hidden` (optional): Boolean flag to include hidden files/directories (those starting with "."). Defaults to `false`.
 
 **Example:**
 ```bash
+# List without hidden files (default)
 curl "http://localhost:8080/ls?path=/Obsidian"
+
+# List including hidden files
+curl "http://localhost:8080/ls?path=/Obsidian&include-hidden=true"
 ```
 
 **Response:**
@@ -135,6 +140,26 @@ curl "http://localhost:8080/ls?path=/Obsidian"
 
 ### POST /diff
 Trigger change detection on all observed directories.
+
+**Request Body (optional):**
+```json
+{
+  "include-hidden": false
+}
+```
+
+- `include-hidden` (optional): Boolean flag to include hidden files/directories in change detection. Defaults to `false`.
+
+**Example:**
+```bash
+# Default behavior (exclude hidden files)
+curl -X POST http://localhost:8080/diff
+
+# Include hidden files
+curl -X POST http://localhost:8080/diff \
+  -H "Content-Type: application/json" \
+  -d '{"include-hidden": true}'
+```
 
 **Response:**
 ```json
@@ -219,11 +244,13 @@ Response:
 
 ### List Directory Contents
 ```bash
+# List without hidden files (default)
 curl "http://localhost:8080/ls?path=/Obsidian"
-```
 
-Or list root directory:
-```bash
+# List including hidden files
+curl "http://localhost:8080/ls?path=/Obsidian&include-hidden=true"
+
+# List root directory
 curl http://localhost:8080/ls
 ```
 
@@ -237,7 +264,13 @@ Response:
 
 ### Check for Changes (Diff)
 ```bash
+# Default (exclude hidden files)
 curl -X POST http://localhost:8080/diff
+
+# Include hidden files
+curl -X POST http://localhost:8080/diff \
+  -H "Content-Type: application/json" \
+  -d '{"include-hidden": true}'
 ```
 
 Response:

@@ -37,18 +37,30 @@ type FileInfo struct {
 	ETag         string
 }
 
+// isHidden checks if a file or directory path contains hidden components
+// Hidden files/directories are those starting with "."
+func isHidden(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for _, part := range parts {
+		if part != "" && strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
+}
+
 // ListFiles lists all files in a directory recursively
-func (c *Client) ListFiles(dirPath string) ([]FileInfo, error) {
+func (c *Client) ListFiles(dirPath string, includeHidden bool) ([]FileInfo, error) {
 	// Construct Nextcloud WebDAV path: /files/username/directory
 	webdavPath := c.buildWebDAVPath(dirPath)
 
 	var files []FileInfo
-	err := c.walkDir(webdavPath, dirPath, &files)
+	err := c.walkDir(webdavPath, dirPath, &files, includeHidden)
 	return files, err
 }
 
 // ListDir lists only the immediate children of a directory (non-recursive)
-func (c *Client) ListDir(dirPath string) ([]FileInfo, error) {
+func (c *Client) ListDir(dirPath string, includeHidden bool) ([]FileInfo, error) {
 	// Construct Nextcloud WebDAV path: /files/username/directory
 	webdavPath := c.buildWebDAVPath(dirPath)
 	
@@ -102,6 +114,12 @@ func (c *Client) ListDir(dirPath string) ([]FileInfo, error) {
 		// Convert WebDAV path back to relative path
 		relativePath := c.extractRelativePath(item.Path, dirPath)
 		item.Path = relativePath
+		
+		// Filter hidden files if not including them
+		if !includeHidden && isHidden(relativePath) {
+			continue
+		}
+		
 		files = append(files, item)
 	}
 
@@ -118,7 +136,7 @@ func (c *Client) buildWebDAVPath(dirPath string) string {
 	return "/files/" + c.username + "/" + dirPath
 }
 
-func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileInfo) error {
+func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileInfo, includeHidden bool) error {
 	// Ensure path ends with / for directories
 	if !strings.HasSuffix(webdavPath, "/") {
 		webdavPath += "/"
@@ -171,6 +189,22 @@ func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileIn
 		// Convert WebDAV path back to relative path for storage
 		relativePath := c.extractRelativePath(item.Path, originalPath)
 		item.Path = relativePath
+		
+		// Filter hidden files if not including them
+		if !includeHidden && isHidden(relativePath) {
+			// Still need to recurse into hidden directories if they exist
+			// but skip adding them to the results
+			if item.IsDir {
+				if !strings.HasSuffix(fullWebDAVPath, "/") {
+					fullWebDAVPath += "/"
+				}
+				if err := c.walkDir(fullWebDAVPath, relativePath, files, includeHidden); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		
 		*files = append(*files, item)
 
 		// Recursively walk subdirectories using the full WebDAV path
@@ -179,7 +213,7 @@ func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileIn
 			if !strings.HasSuffix(fullWebDAVPath, "/") {
 				fullWebDAVPath += "/"
 			}
-			if err := c.walkDir(fullWebDAVPath, relativePath, files); err != nil {
+			if err := c.walkDir(fullWebDAVPath, relativePath, files, includeHidden); err != nil {
 				return err
 			}
 		}

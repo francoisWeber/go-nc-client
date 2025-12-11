@@ -3,6 +3,7 @@ package webdav
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -49,13 +50,27 @@ func isHidden(path string) bool {
 	return false
 }
 
+// SubdirETagChecker is a function that checks if a subdirectory's ETag has changed
+// Returns: (hasPreviousETag, previousETag, filesFromPreviousState, error)
+type SubdirETagChecker func(subdirPath string) (bool, string, []FileInfo, error)
+
+// SubdirETagStorer is a function that stores a subdirectory's ETag
+type SubdirETagStorer func(subdirPath string, etag string)
+
 // ListFiles lists all files in a directory recursively
 func (c *Client) ListFiles(dirPath string, includeHidden bool) ([]FileInfo, error) {
-	// Construct Nextcloud WebDAV path: /files/username/directory
-	webdavPath := c.buildWebDAVPath(dirPath)
+	return c.ListFilesWithETagOptimization(dirPath, includeHidden, nil, nil)
+}
 
+// ListFilesWithETagOptimization lists files with ETag-based optimization for subdirectories
+func (c *Client) ListFilesWithETagOptimization(dirPath string, includeHidden bool, etagChecker SubdirETagChecker, etagStorer SubdirETagStorer) ([]FileInfo, error) {
+	webdavPath := c.buildWebDAVPath(dirPath)
 	var files []FileInfo
-	err := c.walkDir(webdavPath, dirPath, &files, includeHidden)
+
+	err := c.walkDirWithProgress(webdavPath, dirPath, &files, includeHidden, func(int) {}, etagChecker, etagStorer)
+	if err != nil {
+		log.Printf("Error scanning %s: %v", dirPath, err)
+	}
 	return files, err
 }
 
@@ -63,7 +78,7 @@ func (c *Client) ListFiles(dirPath string, includeHidden bool) ([]FileInfo, erro
 func (c *Client) ListDir(dirPath string, includeHidden bool) ([]FileInfo, error) {
 	// Construct Nextcloud WebDAV path: /files/username/directory
 	webdavPath := c.buildWebDAVPath(dirPath)
-	
+
 	// Ensure path ends with / for directories
 	if !strings.HasSuffix(webdavPath, "/") {
 		webdavPath += "/"
@@ -103,23 +118,23 @@ func (c *Client) ListDir(dirPath string, includeHidden bool) ([]FileInfo, error)
 		// Normalize the item path for comparison (remove Nextcloud prefixes)
 		normalizedItemPath := c.normalizePathForComparison(item.Path)
 		normalizedWebDAVPath := c.normalizePathForComparison(webdavPath)
-		
+
 		// Skip the directory itself
-		if normalizedItemPath == normalizedWebDAVPath || 
-		   normalizedItemPath == strings.TrimSuffix(normalizedWebDAVPath, "/") ||
-		   strings.TrimSuffix(normalizedItemPath, "/") == normalizedWebDAVPath {
+		if normalizedItemPath == normalizedWebDAVPath ||
+			normalizedItemPath == strings.TrimSuffix(normalizedWebDAVPath, "/") ||
+			strings.TrimSuffix(normalizedItemPath, "/") == normalizedWebDAVPath {
 			continue
 		}
 
 		// Convert WebDAV path back to relative path
 		relativePath := c.extractRelativePath(item.Path, dirPath)
 		item.Path = relativePath
-		
+
 		// Filter hidden files if not including them
 		if !includeHidden && isHidden(relativePath) {
 			continue
 		}
-		
+
 		files = append(files, item)
 	}
 
@@ -136,11 +151,15 @@ func (c *Client) buildWebDAVPath(dirPath string) string {
 	return "/files/" + c.username + "/" + dirPath
 }
 
-func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileInfo, includeHidden bool) error {
+// walkDirWithProgress is the internal recursive function with progress tracking and ETag optimization
+func (c *Client) walkDirWithProgress(webdavPath string, originalPath string, files *[]FileInfo, includeHidden bool, progressTracker func(int), etagChecker SubdirETagChecker, etagStorer SubdirETagStorer) error {
 	// Ensure path ends with / for directories
 	if !strings.HasSuffix(webdavPath, "/") {
 		webdavPath += "/"
 	}
+
+	// Call progress tracker
+	progressTracker(len(*files))
 
 	req, err := http.NewRequest("PROPFIND", c.baseURL+webdavPath, nil)
 	if err != nil {
@@ -175,21 +194,21 @@ func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileIn
 		// Normalize paths for comparison
 		normalizedItemPath := c.normalizePathForComparison(item.Path)
 		normalizedWebDAVPath := c.normalizePathForComparison(webdavPath)
-		
+
 		// Skip the directory itself
-		if normalizedItemPath == normalizedWebDAVPath || 
-		   normalizedItemPath == strings.TrimSuffix(normalizedWebDAVPath, "/") ||
-		   strings.TrimSuffix(normalizedItemPath, "/") == normalizedWebDAVPath {
+		if normalizedItemPath == normalizedWebDAVPath ||
+			normalizedItemPath == strings.TrimSuffix(normalizedWebDAVPath, "/") ||
+			strings.TrimSuffix(normalizedItemPath, "/") == normalizedWebDAVPath {
 			continue
 		}
 
 		// Store the full WebDAV path for recursion
 		fullWebDAVPath := item.Path
-		
+
 		// Convert WebDAV path back to relative path for storage
 		relativePath := c.extractRelativePath(item.Path, originalPath)
 		item.Path = relativePath
-		
+
 		// Filter hidden files if not including them
 		if !includeHidden && isHidden(relativePath) {
 			// Still need to recurse into hidden directories if they exist
@@ -198,13 +217,16 @@ func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileIn
 				if !strings.HasSuffix(fullWebDAVPath, "/") {
 					fullWebDAVPath += "/"
 				}
-				if err := c.walkDir(fullWebDAVPath, relativePath, files, includeHidden); err != nil {
+				// For hidden directories, we still need to recurse but use a no-op progress tracker
+				// to avoid spam (hidden dirs are filtered out anyway)
+				noOpProgress := func(int) {}
+				if err := c.walkDirWithProgress(fullWebDAVPath, relativePath, files, includeHidden, noOpProgress, etagChecker, etagStorer); err != nil {
 					return err
 				}
 			}
 			continue
 		}
-		
+
 		*files = append(*files, item)
 
 		// Recursively walk subdirectories using the full WebDAV path
@@ -213,8 +235,40 @@ func (c *Client) walkDir(webdavPath string, originalPath string, files *[]FileIn
 			if !strings.HasSuffix(fullWebDAVPath, "/") {
 				fullWebDAVPath += "/"
 			}
-			if err := c.walkDir(fullWebDAVPath, relativePath, files, includeHidden); err != nil {
-				return err
+
+			// Check ETag optimization for subdirectories
+			shouldScan := true
+
+			// Always get current ETag for this subdirectory (needed for storage)
+			subdirInfo, err := c.Stat(relativePath)
+			if err == nil {
+				currentETag := subdirInfo.ETag
+
+				// Store ETag for this subdirectory (always, so it's available for next run)
+				if etagStorer != nil {
+					etagStorer(relativePath, currentETag)
+				}
+
+				// Check if we can optimize by reusing previous state
+				if etagChecker != nil {
+					hasPrevETag, prevETag, prevFiles, err := etagChecker(relativePath)
+					if err == nil && hasPrevETag && prevETag == currentETag {
+						// Subdirectory unchanged, reuse files from previous state
+						for _, prevFile := range prevFiles {
+							if includeHidden || !isHidden(prevFile.Path) {
+								*files = append(*files, prevFile)
+							}
+						}
+						shouldScan = false
+					}
+				}
+			}
+
+			if shouldScan {
+				if err := c.walkDirWithProgress(fullWebDAVPath, relativePath, files, includeHidden, progressTracker, etagChecker, etagStorer); err != nil {
+					return err
+				}
+				progressTracker(len(*files))
 			}
 		}
 	}
@@ -228,16 +282,16 @@ func (c *Client) normalizePathForComparison(path string) string {
 	// Remove /remote.php/dav/files/username/ prefix if present
 	nextcloudPrefix := "/remote.php/dav/files/" + c.username + "/"
 	path = strings.TrimPrefix(path, nextcloudPrefix)
-	
+
 	// Also handle /files/username/ prefix
 	filesPrefix := "/files/" + c.username + "/"
 	path = strings.TrimPrefix(path, filesPrefix)
-	
+
 	// Ensure it starts with /
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	
+
 	return path
 }
 
@@ -247,22 +301,22 @@ func (c *Client) extractRelativePath(webdavPath, baseDir string) string {
 	// Remove /remote.php/dav/files/username/ prefix if present
 	nextcloudPrefix := "/remote.php/dav/files/" + c.username + "/"
 	webdavPath = strings.TrimPrefix(webdavPath, nextcloudPrefix)
-	
+
 	// Also handle /files/username/ prefix (without remote.php/dav)
 	filesPrefix := "/files/" + c.username + "/"
 	webdavPath = strings.TrimPrefix(webdavPath, filesPrefix)
-	
+
 	// Ensure it starts with /
 	if !strings.HasPrefix(webdavPath, "/") {
 		webdavPath = "/" + webdavPath
 	}
-	
+
 	// Remove trailing slash for files (but keep / for root)
 	webdavPath = strings.TrimSuffix(webdavPath, "/")
 	if webdavPath == "" {
 		webdavPath = "/"
 	}
-	
+
 	return webdavPath
 }
 
@@ -306,4 +360,3 @@ func (c *Client) Stat(filePath string) (*FileInfo, error) {
 	result.Path = c.extractRelativePath(result.Path, filePath)
 	return &result, nil
 }
-

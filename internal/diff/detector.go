@@ -3,6 +3,7 @@ package diff
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 )
 
 type Detector struct {
-	client   *webdav.Client
+	client    *webdav.Client
 	stateFile string
 }
 
@@ -25,9 +26,9 @@ type FileState struct {
 }
 
 type State struct {
-	Files         map[string]FileState `json:"files"`          // key: directory+path
-	DirectoryETags map[string]string     `json:"directory_etags"` // key: directory path, value: ETag
-	LastUpdate    time.Time             `json:"last_update"`
+	Files          map[string]FileState `json:"files"`           // key: directory+path
+	DirectoryETags map[string]string    `json:"directory_etags"` // key: directory path, value: ETag
+	LastUpdate     time.Time            `json:"last_update"`
 }
 
 type Change struct {
@@ -40,8 +41,8 @@ type Change struct {
 }
 
 type Changes struct {
-	Directory string   `json:"directory"`
-	Changes   []Change `json:"changes"`
+	Directory string    `json:"directory"`
+	Changes   []Change  `json:"changes"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -53,14 +54,20 @@ func NewDetector(client *webdav.Client, stateFile string) *Detector {
 }
 
 func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Changes, error) {
+	log.Printf("[DIFF] Loading previous state from %s", d.stateFile)
+
 	// Load previous state
 	prevState, err := d.loadState()
 	if err != nil {
+		log.Printf("[DIFF] No previous state found or error loading: %v", err)
 		prevState = &State{
 			Files:          make(map[string]FileState),
 			DirectoryETags: make(map[string]string),
 			LastUpdate:     time.Time{},
 		}
+	} else {
+		log.Printf("[DIFF] Loaded previous state: %d files tracked, last update: %v",
+			len(prevState.Files), prevState.LastUpdate)
 	}
 
 	// Ensure DirectoryETags map exists
@@ -86,9 +93,9 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 			dir = "/" + dir
 		}
 
-		// Check directory ETag to optimize scanning
 		dirInfo, err := d.client.Stat(dir)
 		if err != nil {
+			log.Printf("Error statting directory %s: %v", dir, err)
 			return nil, fmt.Errorf("failed to stat directory %s: %w", dir, err)
 		}
 
@@ -96,10 +103,15 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 		currentDirETag := dirInfo.ETag
 		directoryUnchanged := prevDirETag != "" && prevDirETag == currentDirETag
 
+		if directoryUnchanged {
+			log.Printf("Directory %s unchanged, reusing state", dir)
+		}
+
 		var files []webdav.FileInfo
 		if directoryUnchanged {
 			// Directory hasn't changed, reuse previous state
 			dirKey := dir
+			fileCount := 0
 			for key, fileState := range prevState.Files {
 				if strings.HasPrefix(key, dirKey+":") {
 					// Filter hidden files if not including them
@@ -116,17 +128,82 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 						ModifiedTime: fileState.ModifiedTime,
 						ETag:         fileState.ETag,
 					})
+					fileCount++
 				}
 			}
 		} else {
-			// Directory has changed or first scan, do full recursive scan
-			files, err = d.client.ListFiles(dir, includeHidden)
-			if err != nil {
-				return nil, fmt.Errorf("failed to list files in %s: %w", dir, err)
+			// Directory has changed or first scan, do full recursive scan with ETag optimization
+			scanStartTime := time.Now()
+
+			// Create ETag checker callback for subdirectories
+			dirKey := dir
+			etagChecker := func(subdirPath string) (bool, string, []webdav.FileInfo, error) {
+				// Normalize subdirectory path
+				normalizedSubdir := subdirPath
+				if !strings.HasPrefix(normalizedSubdir, "/") {
+					normalizedSubdir = "/" + normalizedSubdir
+				}
+
+				// Extract files from previous state for this subdirectory
+				var prevFiles []webdav.FileInfo
+				var dirFileState *FileState
+				subdirPrefix := normalizedSubdir + "/"
+				for key, fileState := range prevState.Files {
+					if strings.HasPrefix(key, dirKey+":") {
+						filePath := fileState.Path
+						// Check if this file belongs to the subdirectory
+						if filePath == normalizedSubdir || strings.HasPrefix(filePath, subdirPrefix) {
+							// If this is the directory itself, save its file state
+							if filePath == normalizedSubdir && fileState.IsDir {
+								dirFileState = &fileState
+							}
+							prevFiles = append(prevFiles, webdav.FileInfo{
+								Path:         fileState.Path,
+								IsDir:        fileState.IsDir,
+								Size:         fileState.Size,
+								ModifiedTime: fileState.ModifiedTime,
+								ETag:         fileState.ETag,
+							})
+						}
+					}
+				}
+
+				// Try to get ETag from DirectoryETags map first
+				prevETag, hasETag := prevState.DirectoryETags[normalizedSubdir]
+				if !hasETag {
+					// Fallback: use the directory's file entry ETag if available
+					// This handles cases where DirectoryETags wasn't populated in previous runs
+					if dirFileState != nil && dirFileState.IsDir {
+						prevETag = dirFileState.ETag
+						hasETag = true
+					}
+				}
+
+				if !hasETag {
+					return false, "", nil, nil
+				}
+
+				return true, prevETag, prevFiles, nil
 			}
 
+			// Create ETag storer callback to store subdirectory ETags as we encounter them
+			etagStorer := func(subdirPath string, etag string) {
+				// Normalize subdirectory path
+				normalizedSubdir := subdirPath
+				if !strings.HasPrefix(normalizedSubdir, "/") {
+					normalizedSubdir = "/" + normalizedSubdir
+				}
+				currentState.DirectoryETags[normalizedSubdir] = etag
+			}
+
+			files, err = d.client.ListFilesWithETagOptimization(dir, includeHidden, etagChecker, etagStorer)
+			if err != nil {
+				log.Printf("Error listing files in %s: %v", dir, err)
+				return nil, fmt.Errorf("failed to list files in %s: %w", dir, err)
+			}
+			log.Printf("Scanned %d files in %s (%v)", len(files), dir, time.Since(scanStartTime))
+
 			// Build current state for this directory
-			dirKey := dir
 			for _, file := range files {
 				key := dirKey + ":" + file.Path
 				currentState.Files[key] = FileState{
@@ -144,15 +221,26 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 
 		// Detect changes
 		changes := d.compareStates(dir, prevState, currentState)
+
+		changeCounts := make(map[string]int)
+		for _, change := range changes {
+			changeCounts[change.Type]++
+		}
+		if len(changes) > 0 {
+			log.Printf("Detected %d changes in %s: %v", len(changes), dir, changeCounts)
+		}
+
 		allChanges = append(allChanges, Changes{
 			Directory: dir,
 			Changes:   changes,
 			Timestamp: time.Now(),
 		})
+
 	}
 
 	// Save new state
 	if err := d.saveState(currentState); err != nil {
+		log.Printf("Error saving state: %v", err)
 		return nil, fmt.Errorf("failed to save state: %w", err)
 	}
 
@@ -259,7 +347,7 @@ func (d *Detector) detectMoves(changes []Change, directory string, prevState, cu
 					// Remove the created and deleted entries, add a moved entry
 					changes = removeChange(changes, "created", crFile.Path)
 					changes = removeChange(changes, "deleted", delFile.Path)
-					
+
 					changes = append(changes, Change{
 						Type:     "moved",
 						Path:     crFile.Path,
@@ -340,11 +428,11 @@ func (d *Detector) saveState(state *State) error {
 		}
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	// Use Marshal instead of MarshalIndent for better performance with large files
+	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
 
 	return os.WriteFile(d.stateFile, data, 0644)
 }
-

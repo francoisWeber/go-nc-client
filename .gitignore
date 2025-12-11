@@ -25,6 +25,9 @@ config.json
 state.json
 *.state
 
+# Data directory (for Docker)
+data/
+
 # IDE files
 .idea/
 .vscode/
@@ -35,4 +38,3 @@ state.json
 # OS files
 .DS_Store
 Thumbs.db
-

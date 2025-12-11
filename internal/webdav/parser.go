@@ -9,13 +9,13 @@ import (
 )
 
 type propfindResponse struct {
-	XMLName xml.Name `xml:"multistatus"`
+	XMLName   xml.Name   `xml:"multistatus"`
 	Responses []response `xml:"response"`
 }
 
 type response struct {
-	Href      string   `xml:"href"`
-	PropStat  propStat `xml:"propstat"`
+	Href     string   `xml:"href"`
+	PropStat propStat `xml:"propstat"`
 }
 
 type propStat struct {
@@ -24,12 +24,12 @@ type propStat struct {
 }
 
 type prop struct {
-	DisplayName     string `xml:"displayname"`
-	ResourceType    resType `xml:"resourcetype"`
-	ContentLength   string `xml:"getcontentlength"`
-	ContentType     string `xml:"getcontenttype"`
-	LastModified    string `xml:"getlastmodified"`
-	ETag            string `xml:"getetag"`
+	DisplayName   string  `xml:"displayname"`
+	ResourceType  resType `xml:"resourcetype"`
+	ContentLength string  `xml:"getcontentlength"`
+	ContentType   string  `xml:"getcontenttype"`
+	LastModified  string  `xml:"getlastmodified"`
+	ETag          string  `xml:"getetag"`
 }
 
 type resType struct {
@@ -46,7 +46,7 @@ func parsePropfindResponse(body []byte, baseURL string) ([]FileInfo, error) {
 	for _, r := range resp.Responses {
 		// Handle both absolute URLs and relative paths
 		path := r.Href
-		
+
 		// If it's an absolute URL, extract the path part
 		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 			parsedURL, err := url.Parse(path)
@@ -54,7 +54,7 @@ func parsePropfindResponse(body []byte, baseURL string) ([]FileInfo, error) {
 				path = parsedURL.Path
 			}
 		}
-		
+
 		// Normalize path - remove baseURL path prefix if present
 		// baseURL might be "https://domain.com/remote.php/dav", so extract just the path part
 		if parsedBaseURL, err := url.Parse(baseURL); err == nil {
@@ -64,7 +64,7 @@ func parsePropfindResponse(body []byte, baseURL string) ([]FileInfo, error) {
 			// Fallback: try direct string prefix removal
 			path = strings.TrimPrefix(path, baseURL)
 		}
-		
+
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
@@ -99,4 +99,3 @@ func parsePropfindResponse(body []byte, baseURL string) ([]FileInfo, error) {
 
 	return files, nil
 }
-

@@ -45,4 +45,3 @@ func Save(cfg *Config, filename string) error {
 	}
 	return os.WriteFile(filename, data, 0644)
 }
-

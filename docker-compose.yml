@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  go-nc-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-nc-client
+    ports:
+      - "8083:8083"
+    volumes:
+      # Persist state.json and other data files
+      # Make sure config.json has "state_file": "data/state.json" for Docker usage
+      - ./data:/app/data
+      # Mount config.json (make sure to create it before starting)
+      # If config.json doesn't exist, the app will use defaults
+      - ./config.json:/app/config.json:ro
+    environment:
+      # You can override port via environment variable if needed
+      - PORT=8083
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8083/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

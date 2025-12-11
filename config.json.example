@@ -6,6 +6,6 @@
     "/Documents",
     "/Photos"
   ],
-  "state_file": "state.json"
+  "state_file": "data/state.json"
 }
 

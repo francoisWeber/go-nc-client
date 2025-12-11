@@ -34,10 +34,6 @@ cp config.json.example config.json
   "webdav_url": "https://your-nextcloud-server.com/remote.php/dav",
   "username": "your-username",
   "password": "your-password",
-  "directories": [
-    "/Documents",
-    "/Photos"
-  ],
   "state_file": "state.json"
 }
 ```
@@ -102,36 +98,6 @@ Health check endpoint.
 }
 ```
 
-### GET /directories
-Get the list of directories being observed.
-
-**Response:**
-```json
-[
-  "/Documents",
-  "/Photos"
-]
-```
-
-### POST /directories
-Update the list of directories to observe.
-
-**Request Body:**
-```json
-[
-  "/Documents",
-  "/Photos",
-  "/Videos"
-]
-```
-
-**Response:**
-```json
-{
-  "message": "directories updated"
-}
-```
-
 ### GET /ls
 List files and directories in a specific path.
 
@@ -172,7 +138,7 @@ curl "http://localhost:8080/ls?path=/Obsidian&include-hidden=true"
 ```
 
 ### POST /diff
-Trigger change detection on directories. Can use configured directories from `config.json` or specify custom paths via query parameter or request body.
+Trigger change detection on directories. Specify paths via query parameter or request body.
 
 **Query Parameters (optional):**
 - `path`: Single directory path to scan (simpler for single paths)
@@ -187,15 +153,12 @@ Trigger change detection on directories. Can use configured directories from `co
 ```
 
 - `include-hidden` (optional): Boolean flag to include hidden files/directories in change detection. Defaults to `false`.
-- `paths` (optional): Array of directory paths to scan. If not provided, uses directories from `config.json`.
+- `paths` (optional): Array of directory paths to scan. Required if `path` query parameter is not provided.
 
-**Priority order:** Query parameter `path` > Request body `paths` > Configured directories from `config.json`
+**Priority order:** Query parameter `path` > Request body `paths`
 
 **Examples:**
 ```bash
-# Use configured directories from config.json (default behavior)
-curl -X POST http://localhost:8080/diff
-
 # Diff single path via query parameter (simplest)
 curl -X POST "http://localhost:8080/diff?path=/Obsidian"
 
@@ -272,28 +235,6 @@ Response:
 {"status":"ok"}
 ```
 
-### Get Observed Directories
-```bash
-curl http://localhost:8080/directories
-```
-
-Response:
-```json
-["/Documents","/Photos"]
-```
-
-### Update Observed Directories
-```bash
-curl -X POST http://localhost:8080/directories \
-  -H "Content-Type: application/json" \
-  -d '["/Documents", "/Photos", "/Videos"]'
-```
-
-Response:
-```json
-{"message":"directories updated"}
-```
-
 ### List Directory Contents
 ```bash
 # List without hidden files (default)
@@ -316,9 +257,6 @@ Response:
 
 ### Check for Changes (Diff)
 ```bash
-# Use configured directories (default)
-curl -X POST http://localhost:8080/diff
-
 # Diff single path via query parameter (simplest)
 curl -X POST "http://localhost:8080/diff?path=/Obsidian"
 
@@ -333,7 +271,7 @@ curl -X POST http://localhost:8080/diff \
 # Include hidden files
 curl -X POST http://localhost:8080/diff \
   -H "Content-Type: application/json" \
-  -d '{"include-hidden": true}'
+  -d '{"paths": ["/Obsidian"], "include-hidden": true}'
 ```
 
 Response:
@@ -348,7 +286,7 @@ Response:
 
 ## How It Works
 
-1. The server maintains a state file (`state.json` by default) that stores the last known state of all files in the observed directories.
+1. The server maintains a state file (`state.json` by default) that stores the last known state of all files in the directories you scan.
 
 2. When you call `/diff`, the server:
    - Checks directory ETags to optimize scanning (skips unchanged directories)

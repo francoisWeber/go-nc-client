@@ -31,12 +31,11 @@ func main() {
 	detector := diff.NewDetector(client, cfg.StateFile)
 
 	// Initialize handlers
-	h := handlers.NewHandlers(cfg, detector, client)
+	h := handlers.NewHandlers(detector, client)
 
 	// Setup routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)
-	mux.HandleFunc("/directories", h.Directories)
 	mux.HandleFunc("/diff", h.Diff)
 	mux.HandleFunc("/ls", h.List)
 

@@ -6,11 +6,10 @@ import (
 )
 
 type Config struct {
-	WebDAVURL   string   `json:"webdav_url"`
-	Username    string   `json:"username"`
-	Password    string   `json:"password"`
-	Directories []string `json:"directories"`
-	StateFile   string   `json:"state_file"`
+	WebDAVURL string `json:"webdav_url"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	StateFile string `json:"state_file"`
 }
 
 func Load(filename string) (*Config, error) {
@@ -18,11 +17,10 @@ func Load(filename string) (*Config, error) {
 	if err != nil {
 		// Return default config if file doesn't exist
 		return &Config{
-			WebDAVURL:   "",
-			Username:    "",
-			Password:    "",
-			Directories: []string{},
-			StateFile:   "state.json",
+			WebDAVURL: "",
+			Username:  "",
+			Password:  "",
+			StateFile: "state.json",
 		}, nil
 	}
 

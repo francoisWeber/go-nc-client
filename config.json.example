@@ -2,10 +2,5 @@
   "webdav_url": "https://your-nextcloud-server.com/remote.php/dav",
   "username": "your-username",
   "password": "your-password",
-  "directories": [
-    "/Documents",
-    "/Photos"
-  ],
   "state_file": "data/state.json"
 }
-

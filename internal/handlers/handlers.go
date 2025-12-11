@@ -7,20 +7,17 @@ import (
 	"net/http"
 	"time"
 
-	"go-nc-client/internal/config"
 	"go-nc-client/internal/diff"
 	"go-nc-client/internal/webdav"
 )
 
 type Handlers struct {
-	config   *config.Config
 	detector *diff.Detector
 	client   *webdav.Client
 }
 
-func NewHandlers(cfg *config.Config, detector *diff.Detector, client *webdav.Client) *Handlers {
+func NewHandlers(detector *diff.Detector, client *webdav.Client) *Handlers {
 	return &Handlers{
-		config:   cfg,
 		detector: detector,
 		client:   client,
 	}
@@ -34,35 +31,6 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func (h *Handlers) Directories(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	switch r.Method {
-	case http.MethodGet:
-		json.NewEncoder(w).Encode(h.config.Directories)
-
-	case http.MethodPost:
-		var dirs []string
-		if err := json.NewDecoder(r.Body).Decode(&dirs); err != nil {
-			log.Printf("Error decoding directories request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		h.config.Directories = dirs
-		if err := config.Save(h.config, "config.json"); err != nil {
-			log.Printf("Error saving config: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		json.NewEncoder(w).Encode(map[string]string{"message": "directories updated"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
 }
 
 type DiffRequest struct {
@@ -162,7 +130,7 @@ func parseDiffRequest(r *http.Request) (*DiffRequest, error) {
 }
 
 func (h *Handlers) resolveDirectories(r *http.Request, req *DiffRequest) ([]string, error) {
-	// Priority: query parameter > request body > config file
+	// Priority: query parameter > request body
 	if pathParam := r.URL.Query().Get("path"); pathParam != "" {
 		return []string{pathParam}, nil
 	}
@@ -171,9 +139,5 @@ func (h *Handlers) resolveDirectories(r *http.Request, req *DiffRequest) ([]stri
 		return req.Paths, nil
 	}
 
-	if len(h.config.Directories) > 0 {
-		return h.config.Directories, nil
-	}
-
-	return nil, fmt.Errorf("no directories specified. Either provide 'path' query parameter, 'paths' in request body, or configure directories in config.json")
+	return nil, fmt.Errorf("no directories specified. Either provide 'path' query parameter or 'paths' in request body")
 }

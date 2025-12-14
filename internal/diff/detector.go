@@ -333,36 +333,76 @@ func (d *Detector) detectMoves(changes []Change, directory string, prevState, cu
 	}
 
 	// Try to match deleted files with created files (potential moves)
+	// Strategy:
+	// 1. First try ETag matching (most reliable - same ETag = same file)
+	// 2. Then try unique size matching with time constraint (within 1 minute)
+	
 	for delKey, delFile := range deletedFiles {
 		for crKey, crFile := range createdFiles {
-			// Check if they have the same size and similar modification time (within 1 minute)
-			if delFile.Size == crFile.Size &&
-				!delFile.IsDir &&
-				!crFile.IsDir &&
-				delFile.Size > 0 &&
-				time.Since(delFile.ModifiedTime) < 24*time.Hour {
-				// Check if modification times are close
-				timeDiff := crFile.ModifiedTime.Sub(delFile.ModifiedTime)
-				if timeDiff < 5*time.Minute && timeDiff > -5*time.Minute {
-					// This looks like a move
-					// Remove the created and deleted entries, add a moved entry
-					changes = removeChange(changes, "created", crFile.Path)
-					changes = removeChange(changes, "deleted", delFile.Path)
+			if delFile.IsDir || crFile.IsDir {
+				continue
+			}
+			if delFile.Size <= 0 || delFile.Size != crFile.Size {
+				continue
+			}
 
-					changes = append(changes, Change{
-						Type:     "moved",
-						Path:     crFile.Path,
-						OldPath:  delFile.Path,
-						IsDir:    crFile.IsDir,
-						Size:     crFile.Size,
-						Modified: crFile.ModifiedTime,
-					})
+			// Priority 1: ETag matching (most reliable)
+			// If ETags match, it's definitely the same file (moved)
+			if delFile.ETag != "" && crFile.ETag != "" && delFile.ETag == crFile.ETag {
+				// This is definitely a move - same ETag means same file
+				changes = removeChange(changes, "created", crFile.Path)
+				changes = removeChange(changes, "deleted", delFile.Path)
 
-					// Remove from maps to avoid duplicate matches
-					delete(deletedFiles, delKey)
-					delete(createdFiles, crKey)
-					break
+				changes = append(changes, Change{
+					Type:     "moved",
+					Path:     crFile.Path,
+					OldPath:  delFile.Path,
+					IsDir:    crFile.IsDir,
+					Size:     crFile.Size,
+					Modified: crFile.ModifiedTime,
+				})
+
+				delete(deletedFiles, delKey)
+				delete(createdFiles, crKey)
+				break
+			}
+
+			// Priority 2: Size matching with uniqueness check and time constraint
+			// Check if this size is unique (only one deleted and one created file with this size)
+			// AND the time difference between delete and create is within 1 minute
+			sameSizeDeleted := 0
+			sameSizeCreated := 0
+			for _, df := range deletedFiles {
+				if df.Size == delFile.Size && !df.IsDir {
+					sameSizeDeleted++
 				}
+			}
+			for _, cf := range createdFiles {
+				if cf.Size == crFile.Size && !cf.IsDir {
+					sameSizeCreated++
+				}
+			}
+
+			// Check if size is unique AND times are within 1 minute
+			timeDiff := crFile.ModifiedTime.Sub(delFile.ModifiedTime)
+			if sameSizeDeleted == 1 && sameSizeCreated == 1 &&
+				timeDiff < 1*time.Minute && timeDiff > -1*time.Minute {
+				// Unique size match with close timestamps - very likely a move
+				changes = removeChange(changes, "created", crFile.Path)
+				changes = removeChange(changes, "deleted", delFile.Path)
+
+				changes = append(changes, Change{
+					Type:     "moved",
+					Path:     crFile.Path,
+					OldPath:  delFile.Path,
+					IsDir:    crFile.IsDir,
+					Size:     crFile.Size,
+					Modified: crFile.ModifiedTime,
+				})
+
+				delete(deletedFiles, delKey)
+				delete(createdFiles, crKey)
+				break
 			}
 		}
 	}

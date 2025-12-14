@@ -15,3 +15,4 @@ func Logging(next http.Handler) http.Handler {
 		log.Printf("%s %s completed in %v", r.Method, r.URL.Path, duration)
 	})
 }
+

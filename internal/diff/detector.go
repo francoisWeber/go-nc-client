@@ -54,7 +54,8 @@ func NewDetector(client *webdav.Client, stateFile string) *Detector {
 }
 
 func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Changes, error) {
-	log.Printf("[DIFF] Loading previous state from %s", d.stateFile)
+	absPath, _ := filepath.Abs(d.stateFile)
+	log.Printf("Loading previous state from %s (absolute: %s)", d.stateFile, absPath)
 
 	// Load previous state
 	prevState, err := d.loadState()
@@ -420,10 +421,17 @@ func (d *Detector) loadState() (*State, error) {
 }
 
 func (d *Detector) saveState(state *State) error {
+	// Resolve absolute path for logging and to ensure correct location
+	absPath, err := filepath.Abs(d.stateFile)
+	if err != nil {
+		absPath = d.stateFile // Fallback to original if Abs fails
+	}
+
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(d.stateFile)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("Error creating state file directory %s: %v", dir, err)
 			return err
 		}
 	}
@@ -434,5 +442,11 @@ func (d *Detector) saveState(state *State) error {
 		return err
 	}
 
-	return os.WriteFile(d.stateFile, data, 0644)
+	if err := os.WriteFile(d.stateFile, data, 0644); err != nil {
+		log.Printf("Error writing state file to %s (absolute: %s): %v", d.stateFile, absPath, err)
+		return err
+	}
+
+	log.Printf("State saved to %s (absolute: %s)", d.stateFile, absPath)
+	return nil
 }

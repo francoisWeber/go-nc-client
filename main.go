@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"go-nc-client/internal/config"
 	"go-nc-client/internal/diff"
@@ -28,6 +29,8 @@ func main() {
 	client := webdav.NewClient(cfg.WebDAVURL, cfg.Username, cfg.Password)
 
 	// Initialize change detector
+	absStateFile, _ := filepath.Abs(cfg.StateFile)
+	log.Printf("State file configured as: %s (absolute: %s)", cfg.StateFile, absStateFile)
 	detector := diff.NewDetector(client, cfg.StateFile)
 
 	// Initialize handlers

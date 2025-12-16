@@ -112,9 +112,11 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 		if directoryUnchanged {
 			// Directory hasn't changed, reuse previous state
 			dirKey := dir
+			dirPrefix := dirKey + ":"
 			fileCount := 0
+			// Pre-allocate slice with estimated capacity
 			for key, fileState := range prevState.Files {
-				if strings.HasPrefix(key, dirKey+":") {
+				if strings.HasPrefix(key, dirPrefix) {
 					// Filter hidden files if not including them
 					if !includeHidden && isHidden(fileState.Path) {
 						continue
@@ -136,8 +138,17 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 			// Directory has changed or first scan, do full recursive scan with ETag optimization
 			scanStartTime := time.Now()
 
-			// Create ETag checker callback for subdirectories
+			// Pre-filter files for this directory to avoid repeated scans
 			dirKey := dir
+			dirPrefix := dirKey + ":"
+			prevFilesForDir := make(map[string]FileState)
+			for key, fileState := range prevState.Files {
+				if strings.HasPrefix(key, dirPrefix) {
+					prevFilesForDir[key] = fileState
+				}
+			}
+
+			// Create ETag checker callback for subdirectories
 			etagChecker := func(subdirPath string) (bool, string, []webdav.FileInfo, error) {
 				// Normalize subdirectory path
 				normalizedSubdir := subdirPath
@@ -145,43 +156,39 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 					normalizedSubdir = "/" + normalizedSubdir
 				}
 
-				// Extract files from previous state for this subdirectory
-				var prevFiles []webdav.FileInfo
-				var dirFileState *FileState
-				subdirPrefix := normalizedSubdir + "/"
-				for key, fileState := range prevState.Files {
-					if strings.HasPrefix(key, dirKey+":") {
-						filePath := fileState.Path
-						// Check if this file belongs to the subdirectory
-						if filePath == normalizedSubdir || strings.HasPrefix(filePath, subdirPrefix) {
-							// If this is the directory itself, save its file state
-							if filePath == normalizedSubdir && fileState.IsDir {
-								dirFileState = &fileState
-							}
-							prevFiles = append(prevFiles, webdav.FileInfo{
-								Path:         fileState.Path,
-								IsDir:        fileState.IsDir,
-								Size:         fileState.Size,
-								ModifiedTime: fileState.ModifiedTime,
-								ETag:         fileState.ETag,
-							})
-						}
-					}
-				}
-
-				// Try to get ETag from DirectoryETags map first
+				// Try to get ETag from DirectoryETags map first (fastest path)
 				prevETag, hasETag := prevState.DirectoryETags[normalizedSubdir]
+				subdirKey := dirPrefix + normalizedSubdir
+				
+				// Check if directory itself exists in state (for fallback ETag)
 				if !hasETag {
-					// Fallback: use the directory's file entry ETag if available
-					// This handles cases where DirectoryETags wasn't populated in previous runs
-					if dirFileState != nil && dirFileState.IsDir {
-						prevETag = dirFileState.ETag
+					if dirState, exists := prevFilesForDir[subdirKey]; exists && dirState.IsDir && dirState.ETag != "" {
+						prevETag = dirState.ETag
 						hasETag = true
 					}
 				}
 
 				if !hasETag {
 					return false, "", nil, nil
+				}
+
+				// Only collect files if we have a valid previous ETag
+				// Note: The actual ETag comparison happens in walkDirWithProgress
+				// We return files here so they can be reused if ETag matches
+				var prevFiles []webdav.FileInfo
+				subdirPrefix := normalizedSubdir + "/"
+				for _, fileState := range prevFilesForDir {
+					filePath := fileState.Path
+					// Check if this file belongs to the subdirectory
+					if filePath == normalizedSubdir || strings.HasPrefix(filePath, subdirPrefix) {
+						prevFiles = append(prevFiles, webdav.FileInfo{
+							Path:         fileState.Path,
+							IsDir:        fileState.IsDir,
+							Size:         fileState.Size,
+							ModifiedTime: fileState.ModifiedTime,
+							ETag:         fileState.ETag,
+						})
+					}
 				}
 
 				return true, prevETag, prevFiles, nil
@@ -251,14 +258,27 @@ func (d *Detector) DetectChanges(directories []string, includeHidden bool) ([]Ch
 func (d *Detector) compareStates(directory string, prevState, currentState *State) []Change {
 	var changes []Change
 	dirKey := directory
+	dirPrefix := dirKey + ":"
+
+	// Pre-filter files for this directory to avoid repeated prefix checks
+	prevFilesForDir := make(map[string]FileState)
+	currentFilesForDir := make(map[string]FileState)
+	
+	for key, file := range prevState.Files {
+		if strings.HasPrefix(key, dirPrefix) {
+			prevFilesForDir[key] = file
+		}
+	}
+	
+	for key, file := range currentState.Files {
+		if strings.HasPrefix(key, dirPrefix) {
+			currentFilesForDir[key] = file
+		}
+	}
 
 	// Check for created and updated files
-	for key, currentFile := range currentState.Files {
-		if !strings.HasPrefix(key, dirKey+":") {
-			continue
-		}
-
-		prevFile, exists := prevState.Files[key]
+	for key, currentFile := range currentFilesForDir {
+		prevFile, exists := prevFilesForDir[key]
 		if !exists {
 			// New file
 			changes = append(changes, Change{
@@ -269,10 +289,16 @@ func (d *Detector) compareStates(directory string, prevState, currentState *Stat
 				Modified: currentFile.ModifiedTime,
 			})
 		} else {
-			// Check if updated
-			if currentFile.ETag != prevFile.ETag ||
-				currentFile.Size != prevFile.Size ||
-				!currentFile.ModifiedTime.Equal(prevFile.ModifiedTime) {
+			// Check if updated - ETag comparison is fastest, so check it first
+			if currentFile.ETag != prevFile.ETag {
+				changes = append(changes, Change{
+					Type:     "updated",
+					Path:     currentFile.Path,
+					IsDir:    currentFile.IsDir,
+					Size:     currentFile.Size,
+					Modified: currentFile.ModifiedTime,
+				})
+			} else if currentFile.Size != prevFile.Size || !currentFile.ModifiedTime.Equal(prevFile.ModifiedTime) {
 				changes = append(changes, Change{
 					Type:     "updated",
 					Path:     currentFile.Path,
@@ -285,12 +311,8 @@ func (d *Detector) compareStates(directory string, prevState, currentState *Stat
 	}
 
 	// Check for deleted files
-	for key, prevFile := range prevState.Files {
-		if !strings.HasPrefix(key, dirKey+":") {
-			continue
-		}
-
-		if _, exists := currentState.Files[key]; !exists {
+	for key, prevFile := range prevFilesForDir {
+		if _, exists := currentFilesForDir[key]; !exists {
 			changes = append(changes, Change{
 				Type:     "deleted",
 				Path:     prevFile.Path,
@@ -302,108 +324,120 @@ func (d *Detector) compareStates(directory string, prevState, currentState *Stat
 	}
 
 	// Detect moved files (same size and similar timestamp, different path)
-	changes = d.detectMoves(changes, directory, prevState, currentState)
+	changes = d.detectMoves(changes, directory, prevFilesForDir, currentFilesForDir)
 
 	return changes
 }
 
-func (d *Detector) detectMoves(changes []Change, directory string, prevState, currentState *State) []Change {
-	dirKey := directory
-
+func (d *Detector) detectMoves(changes []Change, directory string, prevFilesForDir, currentFilesForDir map[string]FileState) []Change {
 	// Find deleted files that might have been moved
 	deletedFiles := make(map[string]FileState)
-	for key, prevFile := range prevState.Files {
-		if !strings.HasPrefix(key, dirKey+":") {
-			continue
-		}
-		if _, exists := currentState.Files[key]; !exists {
+	for key, prevFile := range prevFilesForDir {
+		if _, exists := currentFilesForDir[key]; !exists {
 			deletedFiles[key] = prevFile
 		}
 	}
 
 	// Find created files that might be moves
 	createdFiles := make(map[string]FileState)
-	for key, currentFile := range currentState.Files {
-		if !strings.HasPrefix(key, dirKey+":") {
-			continue
-		}
-		if _, exists := prevState.Files[key]; !exists {
+	for key, currentFile := range currentFilesForDir {
+		if _, exists := prevFilesForDir[key]; !exists {
 			createdFiles[key] = currentFile
 		}
 	}
 
-	// Try to match deleted files with created files (potential moves)
-	// Strategy:
-	// 1. First try ETag matching (most reliable - same ETag = same file)
-	// 2. Then try unique size matching with time constraint (within 1 minute)
+	// Build indexes for faster lookup
+	// Index by ETag for O(1) lookup
+	deletedByETag := make(map[string]string) // ETag -> key
+	createdByETag := make(map[string]string) // ETag -> key
 	
-	for delKey, delFile := range deletedFiles {
-		for crKey, crFile := range createdFiles {
-			if delFile.IsDir || crFile.IsDir {
-				continue
+	// Index by size for size-based matching
+	deletedBySize := make(map[int64][]string) // size -> []keys
+	createdBySize := make(map[int64][]string) // size -> []keys
+
+	for key, delFile := range deletedFiles {
+		if !delFile.IsDir && delFile.Size > 0 {
+			if delFile.ETag != "" {
+				deletedByETag[delFile.ETag] = key
 			}
-			if delFile.Size <= 0 || delFile.Size != crFile.Size {
-				continue
+			deletedBySize[delFile.Size] = append(deletedBySize[delFile.Size], key)
+		}
+	}
+
+	for key, crFile := range createdFiles {
+		if !crFile.IsDir && crFile.Size > 0 {
+			if crFile.ETag != "" {
+				createdByETag[crFile.ETag] = key
 			}
+			createdBySize[crFile.Size] = append(createdBySize[crFile.Size], key)
+		}
+	}
 
-			// Priority 1: ETag matching (most reliable)
-			// If ETags match, it's definitely the same file (moved)
-			if delFile.ETag != "" && crFile.ETag != "" && delFile.ETag == crFile.ETag {
-				// This is definitely a move - same ETag means same file
-				changes = removeChange(changes, "created", crFile.Path)
-				changes = removeChange(changes, "deleted", delFile.Path)
+	// Priority 1: ETag matching (most reliable - same ETag = same file)
+	// This is O(n) instead of O(n²)
+	matchedKeys := make(map[string]bool)
+	for etag, delKey := range deletedByETag {
+		if crKey, exists := createdByETag[etag]; exists {
+			delFile := deletedFiles[delKey]
+			crFile := createdFiles[crKey]
+			
+			changes = removeChange(changes, "created", crFile.Path)
+			changes = removeChange(changes, "deleted", delFile.Path)
 
-				changes = append(changes, Change{
-					Type:     "moved",
-					Path:     crFile.Path,
-					OldPath:  delFile.Path,
-					IsDir:    crFile.IsDir,
-					Size:     crFile.Size,
-					Modified: crFile.ModifiedTime,
-				})
+			changes = append(changes, Change{
+				Type:     "moved",
+				Path:     crFile.Path,
+				OldPath:  delFile.Path,
+				IsDir:    crFile.IsDir,
+				Size:     crFile.Size,
+				Modified: crFile.ModifiedTime,
+			})
 
-				delete(deletedFiles, delKey)
-				delete(createdFiles, crKey)
-				break
-			}
+			matchedKeys[delKey] = true
+			matchedKeys[crKey] = true
+		}
+	}
 
-			// Priority 2: Size matching with uniqueness check and time constraint
-			// Check if this size is unique (only one deleted and one created file with this size)
-			// AND the time difference between delete and create is within 1 minute
-			sameSizeDeleted := 0
-			sameSizeCreated := 0
-			for _, df := range deletedFiles {
-				if df.Size == delFile.Size && !df.IsDir {
-					sameSizeDeleted++
-				}
-			}
-			for _, cf := range createdFiles {
-				if cf.Size == crFile.Size && !cf.IsDir {
-					sameSizeCreated++
-				}
-			}
+	// Remove matched files from consideration
+	for key := range matchedKeys {
+		delete(deletedFiles, key)
+		delete(createdFiles, key)
+	}
 
-			// Check if size is unique AND times are within 1 minute
-			timeDiff := crFile.ModifiedTime.Sub(delFile.ModifiedTime)
-			if sameSizeDeleted == 1 && sameSizeCreated == 1 &&
-				timeDiff < 1*time.Minute && timeDiff > -1*time.Minute {
-				// Unique size match with close timestamps - very likely a move
-				changes = removeChange(changes, "created", crFile.Path)
-				changes = removeChange(changes, "deleted", delFile.Path)
+	// Priority 2: Size matching with uniqueness check and time constraint
+	// Only check sizes that have exactly one deleted and one created file
+	for size, delKeys := range deletedBySize {
+		crKeys, exists := createdBySize[size]
+		if !exists || len(delKeys) != 1 || len(crKeys) != 1 {
+			continue
+		}
 
-				changes = append(changes, Change{
-					Type:     "moved",
-					Path:     crFile.Path,
-					OldPath:  delFile.Path,
-					IsDir:    crFile.IsDir,
-					Size:     crFile.Size,
-					Modified: crFile.ModifiedTime,
-				})
+		delKey := delKeys[0]
+		crKey := crKeys[0]
+		
+		// Skip if already matched
+		if matchedKeys[delKey] || matchedKeys[crKey] {
+			continue
+		}
 
-				delete(deletedFiles, delKey)
-				delete(createdFiles, crKey)
-				break
-			}
+		delFile := deletedFiles[delKey]
+		crFile := createdFiles[crKey]
+
+		// Check if times are within 1 minute
+		timeDiff := crFile.ModifiedTime.Sub(delFile.ModifiedTime)
+		if timeDiff < 1*time.Minute && timeDiff > -1*time.Minute {
+			// Unique size match with close timestamps - very likely a move
+			changes = removeChange(changes, "created", crFile.Path)
+			changes = removeChange(changes, "deleted", delFile.Path)
+
+			changes = append(changes, Change{
+				Type:     "moved",
+				Path:     crFile.Path,
+				OldPath:  delFile.Path,
+				IsDir:    crFile.IsDir,
+				Size:     crFile.Size,
+				Modified: crFile.ModifiedTime,
+			})
 		}
 	}
 

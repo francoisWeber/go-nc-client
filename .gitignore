@@ -5,6 +5,7 @@ go-nc-client
 *.dll
 *.so
 *.dylib
+nc-api
 
 # Test binary
 *.test

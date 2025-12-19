@@ -11,7 +11,7 @@ This Go application provides a RESTful API to monitor Nextcloud (or any WebDAV) 
 - Lightweight HTTP server
 - WebDAV client integration
 - Directory change detection (created, updated, moved, deleted files)
-- RESTful API for managing directories and checking changes
+- RESTful API for checking changes
 - ETag-based optimization for fast change detection
 
 ## Setup
@@ -53,28 +53,62 @@ The server will start on port 8080 by default (or the port specified in the `POR
 
 ### Docker Deployment
 
-1. Create `config.json` (copy from `config.json.example` and edit):
+#### Option 1: Local Build (Recommended)
+
+1. Clone the repository:
+```bash
+git clone https://github.com/francoisWeber/go-nc-client.git
+cd go-nc-client
+```
+
+2. Create `config.json` (copy from `config.json.example` and edit):
 ```bash
 cp config.json.example config.json
 # Edit config.json with your WebDAV credentials
 ```
 
-2. Create data directory for state persistence:
+3. Create data directory for state persistence:
 ```bash
 mkdir -p data
 ```
 
-3. Build and start with Docker Compose:
+4. Build and start with Docker Compose:
 ```bash
 docker-compose up -d
 ```
 
-4. View logs:
+#### Option 2: Build from GitHub
+
+If you want to build directly from GitHub without cloning locally, use the `Dockerfile.github`:
+
+```yaml
+services:
+  nc-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.github
+      args:
+        GIT_REPO: https://github.com/francoisWeber/go-nc-client.git
+        GIT_BRANCH: main
+    container_name: nc-api
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./nc/.data:/app/data
+      - ./nc/.config.json:/app/config.json:ro
+    environment:
+      - PORT=8083
+    restart: unless-stopped
+```
+
+**Note**: Building from GitHub URL context (`context: https://github.com/...`) has limitations in Docker. Use `Dockerfile.github` with a local context instead.
+
+5. View logs:
 ```bash
 docker-compose logs -f
 ```
 
-5. Stop the service:
+6. Stop the service:
 ```bash
 docker-compose down
 ```
@@ -342,10 +376,6 @@ curl -X POST "http://localhost:8083/diff?path=/Obsidian"
 
 - Standard Go libraries only (no external dependencies required)
 - Go 1.25.5 or later
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
 
 ## License
 

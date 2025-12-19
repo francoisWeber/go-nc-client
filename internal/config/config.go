@@ -16,11 +16,18 @@ func Load(filename string) (*Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		// Return default config if file doesn't exist
+		// Default to data/state.json if /app/data exists (Docker environment)
+		// Otherwise default to state.json (local development)
+		defaultStateFile := "state.json"
+		if _, err := os.Stat("/app/data"); err == nil {
+			defaultStateFile = "data/state.json"
+		}
+		
 		return &Config{
 			WebDAVURL: "",
 			Username:  "",
 			Password:  "",
-			StateFile: "state.json",
+			StateFile: defaultStateFile,
 		}, nil
 	}
 
@@ -30,7 +37,13 @@ func Load(filename string) (*Config, error) {
 	}
 
 	if cfg.StateFile == "" {
-		cfg.StateFile = "state.json"
+		// Default to data/state.json if /app/data exists (Docker environment)
+		// Otherwise default to state.json (local development)
+		if _, err := os.Stat("/app/data"); err == nil {
+			cfg.StateFile = "data/state.json"
+		} else {
+			cfg.StateFile = "state.json"
+		}
 	}
 
 	return &cfg, nil

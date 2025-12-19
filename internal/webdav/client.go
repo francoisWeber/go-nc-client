@@ -238,29 +238,24 @@ func (c *Client) walkDirWithProgress(webdavPath string, originalPath string, fil
 
 			// Check ETag optimization for subdirectories
 			shouldScan := true
+			currentETag := item.ETag // ETag is already available from PROPFIND response
 
-			// Always get current ETag for this subdirectory (needed for storage)
-			subdirInfo, err := c.Stat(relativePath)
-			if err == nil {
-				currentETag := subdirInfo.ETag
+			// Store ETag for this subdirectory (always, so it's available for next run)
+			if etagStorer != nil && currentETag != "" {
+				etagStorer(relativePath, currentETag)
+			}
 
-				// Store ETag for this subdirectory (always, so it's available for next run)
-				if etagStorer != nil {
-					etagStorer(relativePath, currentETag)
-				}
-
-				// Check if we can optimize by reusing previous state
-				if etagChecker != nil {
-					hasPrevETag, prevETag, prevFiles, err := etagChecker(relativePath)
-					if err == nil && hasPrevETag && prevETag == currentETag {
-						// Subdirectory unchanged, reuse files from previous state
-						for _, prevFile := range prevFiles {
-							if includeHidden || !isHidden(prevFile.Path) {
-								*files = append(*files, prevFile)
-							}
+			// Check if we can optimize by reusing previous state
+			if etagChecker != nil && currentETag != "" {
+				hasPrevETag, prevETag, prevFiles, err := etagChecker(relativePath)
+				if err == nil && hasPrevETag && prevETag == currentETag {
+					// Subdirectory unchanged, reuse files from previous state
+					for _, prevFile := range prevFiles {
+						if includeHidden || !isHidden(prevFile.Path) {
+							*files = append(*files, prevFile)
 						}
-						shouldScan = false
 					}
+					shouldScan = false
 				}
 			}
 
